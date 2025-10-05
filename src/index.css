@@ -1,3 +1,33 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  body {
+    @apply min-h-screen bg-slate-950 font-sans text-slate-100 antialiased;
+    background-attachment: fixed;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-heading tracking-tight;
+  }
+
+  ::selection {
+    @apply bg-cyan-400/60 text-slate-950;
+  }
+
+  input[type='range']::-webkit-slider-thumb {
+    @apply h-4 w-4 rounded-full border-2 border-slate-900 bg-cyan-400 shadow-[0_0_0_3px_rgba(8,145,178,0.35)] transition;
+    -webkit-appearance: none;
+    margin-top: -4px;
+  }
+
+  input[type='range']::-moz-range-thumb {
+    @apply h-4 w-4 rounded-full border-2 border-slate-900 bg-cyan-400 shadow-[0_0_0_3px_rgba(8,145,178,0.35)] transition;
+  }
+}
