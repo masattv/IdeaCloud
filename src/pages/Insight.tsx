@@ -86,7 +86,7 @@ export default function Insight() {
 }
 
 function wrapText(doc: jsPDF, text: string, x: number, y: number, width: number) {
-  const lines = doc.splitTextToSize(text, width)
-  lines.forEach((line) => { doc.text(line, x, y); y += 14 })
+  const lines = doc.splitTextToSize(text, width) as string[]
+  lines.forEach((line: string) => { doc.text(line, x, y); y += 14 })
   return y
 }
