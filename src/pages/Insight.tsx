@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { db, IdeaFragment } from '../db/db'
 import { insightForCluster } from '../services/ai'
 import { jsPDF } from 'jspdf'
@@ -9,34 +9,65 @@ export default function Insight() {
   const [rows, setRows] = useState<IdeaFragment[]>([])
   const [ins, setIns] = useState<InsightPayload | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refreshRows = useCallback(async () => {
+    const latest = await db.fragments.orderBy('createdAt').toArray()
+    setRows(latest)
+    return latest
+  }, [])
 
   useEffect(() => {
-    db.fragments.toArray().then(setRows)
-  }, [])
+    void refreshRows()
+  }, [refreshRows])
 
   async function genInsight() {
     try {
+      setError(null)
       setLoading(true)
-      const texts = rows.map(r => r.text)
+      const latestRows = await refreshRows()
+      if (!latestRows.length) {
+        setIns(null)
+        setError('分析するメモがありません。まずはキャプチャから断片を追加してください。')
+        return
+      }
+      const texts = latestRows.map(r => r.text).filter(Boolean)
       if (!texts.length) {
         setIns(null)
+        setError('テキストの内容が空です。メモの内容を確認してください。')
         return
       }
       const result = await insightForCluster(texts)
       setIns(result)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'インサイトの生成に失敗しました。')
     } finally {
       setLoading(false)
     }
   }
 
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `ideacloud-export-${Date.now()}.json`
-    a.click()
-    URL.revokeObjectURL(url)
+  async function exportJson() {
+    try {
+      setError(null)
+      const latestRows = await refreshRows()
+      if (!latestRows.length) {
+        setError('エクスポートできるデータがありません。')
+        return
+      }
+      const blob = new Blob(['\ufeff', JSON.stringify(latestRows, null, 2)], {
+        type: 'application/json;charset=utf-8'
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ideacloud-export-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error(err)
+      setError('JSONエクスポートに失敗しました。')
+    }
   }
 
   async function importJson(e: React.ChangeEvent<HTMLInputElement>) {
@@ -44,39 +75,67 @@ export default function Insight() {
     if (!file) return
     const text = await file.text()
     const arr = JSON.parse(text) as IdeaFragment[]
+    setError(null)
     await db.transaction('rw', db.fragments, async () => {
       for (const f of arr) await db.fragments.put(f)
     })
-    setRows(await db.fragments.toArray())
+    await refreshRows()
     e.target.value = ''
   }
 
-  function exportPdf() {
-    const doc = new jsPDF({ unit: 'pt', format: 'a4' })
-    let y = 40
-    doc.setFontSize(16)
-    doc.text('IdeaCloud Insight', 40, y)
-    y += 24
-    doc.setFontSize(12)
-    if (ins) {
-      doc.text('要約:', 40, y)
-      y += 18
-      y = wrapText(doc, ins.summary, 40, y, 520) + 10
-      doc.text('次の一手:', 40, y)
-      y += 18
-      ins.next_steps.forEach(s => {
-        y = wrapText(doc, '・' + s, 50, y, 510) + 8
+  async function exportPdf() {
+    try {
+      setError(null)
+      const latestRows = await refreshRows()
+      if (!latestRows.length) {
+        setError('エクスポートできるデータがありません。')
+        return
+      }
+
+      const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+      const margin = 40
+      const contentWidth = pageWidth - margin * 2
+      const sections: HTMLCanvasElement[] = []
+
+      sections.push(createHeaderSection(contentWidth, latestRows))
+
+      if (ins) {
+        sections.push(
+          createParagraphSection(contentWidth, '要約', ins.summary, {
+            fallback: '要約がまだ生成されていません。'
+          })
+        )
+        sections.push(createListSection(contentWidth, '次の一手', ins.next_steps, '提案はまだありません。'))
+        sections.push(createListSection(contentWidth, 'タイトル候補', ins.titles, 'タイトル案はまだありません。'))
+      } else {
+        sections.push(
+          createParagraphSection(
+            contentWidth,
+            'インサイト',
+            'まだインサイトが生成されていません。上のボタンから生成を開始してください。'
+          )
+        )
+      }
+
+      let cursorY = margin
+      sections.forEach(canvas => {
+        const imgData = canvas.toDataURL('image/png')
+        const imgHeight = (canvas.height / canvas.width) * contentWidth
+        if (cursorY + imgHeight > pageHeight - margin) {
+          doc.addPage()
+          cursorY = margin
+        }
+        doc.addImage(imgData, 'PNG', margin, cursorY, contentWidth, imgHeight, undefined, 'FAST')
+        cursorY += imgHeight + 16
       })
-      y += 8
-      doc.text('タイトル候補:', 40, y)
-      y += 18
-      ins.titles.forEach(t => {
-        y = wrapText(doc, '・' + t, 50, y, 510) + 8
-      })
-    } else {
-      doc.text('まだインサイトが生成されていません。', 40, y)
+
+      doc.save(`ideacloud-insight-${Date.now()}.pdf`)
+    } catch (err) {
+      console.error(err)
+      setError('PDF出力に失敗しました。ブラウザがCanvas描画に対応しているか確認してください。')
     }
-    doc.save(`ideacloud-insight-${Date.now()}.pdf`)
   }
 
   const statCards = useMemo(
@@ -107,7 +166,7 @@ export default function Insight() {
               {loading ? '生成中…' : 'インサイトを生成'}
             </button>
             <button
-              onClick={exportJson}
+              onClick={() => void exportJson()}
               className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-slate-900/60 px-5 py-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-300/60 hover:text-white"
             >
               JSONエクスポート
@@ -117,12 +176,17 @@ export default function Insight() {
               <input type="file" accept="application/json" onChange={importJson} className="hidden" />
             </label>
             <button
-              onClick={exportPdf}
+              onClick={() => void exportPdf()}
               className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-slate-900/60 px-5 py-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-300/60 hover:text-white"
             >
               PDF出力
             </button>
           </div>
+          {error && (
+            <p className="text-sm text-rose-300" role="alert">
+              {error}
+            </p>
+          )}
         </div>
       </section>
 
@@ -178,11 +242,219 @@ export default function Insight() {
   )
 }
 
-function wrapText(doc: jsPDF, text: string, x: number, y: number, width: number) {
-  const lines = doc.splitTextToSize(text, width) as string[]
-  lines.forEach((line: string) => {
-    doc.text(line, x, y)
-    y += 14
+const CANVAS_DPI = 2
+const FONT_FAMILY = '"Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", "MS PGothic", sans-serif'
+
+function createHeaderSection(width: number, rows: IdeaFragment[]) {
+  const canvasWidth = Math.round(width * CANVAS_DPI)
+  const paddingX = 28 * CANVAS_DPI
+  const paddingY = 32 * CANVAS_DPI
+  const titleSize = 26 * CANVAS_DPI
+  const subtitleSize = 12 * CANVAS_DPI
+  const statLabelSize = 11 * CANVAS_DPI
+  const statValueSize = 20 * CANVAS_DPI
+  const statGap = 24 * CANVAS_DPI
+  const canvasHeight = paddingY * 2 + titleSize + subtitleSize + statValueSize + 60 * CANVAS_DPI
+  const canvas = document.createElement('canvas')
+  canvas.width = canvasWidth
+  canvas.height = canvasHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D contextが利用できません。')
+
+  ctx.fillStyle = '#0f172a'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  setCanvasFont(ctx, titleSize, 'bold')
+  ctx.fillStyle = '#e2e8f0'
+  let cursorY = paddingY + titleSize
+  ctx.fillText('IdeaCloud Insight', paddingX, cursorY)
+
+  setCanvasFont(ctx, subtitleSize, 'normal')
+  ctx.fillStyle = 'rgba(226, 232, 240, 0.8)'
+  cursorY += subtitleSize + 16 * CANVAS_DPI
+  ctx.fillText(new Date().toLocaleString('ja-JP'), paddingX, cursorY)
+
+  const stats = [
+    { label: '断片総数', value: rows.length },
+    {
+      label: '保存済みクラスタ',
+      value: new Set(rows.map(r => r.clusterId).filter(Boolean)).size
+    },
+    {
+      label: 'タグ多様性',
+      value: new Set(rows.flatMap(r => r.tags || [])).size
+    }
+  ]
+
+  const statWidth = (canvasWidth - paddingX * 2 - statGap * (stats.length - 1)) / stats.length
+  cursorY += 30 * CANVAS_DPI
+
+  stats.forEach((stat, index) => {
+    const x = paddingX + index * (statWidth + statGap)
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.75)'
+    setCanvasFont(ctx, statLabelSize, 'normal')
+    ctx.fillText(stat.label, x, cursorY)
+    setCanvasFont(ctx, statValueSize, 'bold')
+    ctx.fillStyle = '#f8fafc'
+    ctx.fillText(String(stat.value), x, cursorY + 28 * CANVAS_DPI)
   })
-  return y
+
+  return canvas
+}
+
+function createParagraphSection(
+  width: number,
+  title: string,
+  text: string,
+  options?: { fallback?: string }
+) {
+  const canvasWidth = Math.round(width * CANVAS_DPI)
+  const paddingX = 28 * CANVAS_DPI
+  const paddingY = 28 * CANVAS_DPI
+  const titleSize = 20 * CANVAS_DPI
+  const bodySize = 14 * CANVAS_DPI
+  const lineHeight = Math.round(bodySize * 1.6)
+  const contentWidth = canvasWidth - paddingX * 2
+  const measure = document.createElement('canvas').getContext('2d')
+  if (!measure) throw new Error('Canvas 2D contextが利用できません。')
+
+  const sourceText = text && text.trim().length ? text : options?.fallback ?? ''
+  const lines = wrapCanvasText(sourceText, contentWidth, bodySize, measure)
+  const canvasHeight = paddingY * 2 + titleSize + 16 * CANVAS_DPI + Math.max(lineHeight, lines.length * lineHeight)
+  const canvas = document.createElement('canvas')
+  canvas.width = canvasWidth
+  canvas.height = canvasHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D contextが利用できません。')
+
+  ctx.fillStyle = '#f8fafc'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  setCanvasFont(ctx, titleSize, 'bold')
+  ctx.fillStyle = '#0f172a'
+  let cursorY = paddingY + titleSize
+  ctx.fillText(title, paddingX, cursorY)
+
+  setCanvasFont(ctx, bodySize, 'normal')
+  ctx.fillStyle = '#1e293b'
+  cursorY += 16 * CANVAS_DPI
+
+  if (!lines.length) {
+    ctx.fillText('内容がありません。', paddingX, cursorY + lineHeight)
+  } else {
+    lines.forEach(line => {
+      if (!line) {
+        cursorY += lineHeight
+      } else {
+        cursorY += lineHeight
+        ctx.fillText(line, paddingX, cursorY)
+      }
+    })
+  }
+
+  return canvas
+}
+
+function createListSection(width: number, title: string, items: string[], emptyMessage: string) {
+  if (!items.length) {
+    return createParagraphSection(width, title, emptyMessage)
+  }
+
+  const canvasWidth = Math.round(width * CANVAS_DPI)
+  const paddingX = 28 * CANVAS_DPI
+  const paddingY = 28 * CANVAS_DPI
+  const titleSize = 18 * CANVAS_DPI
+  const bodySize = 14 * CANVAS_DPI
+  const lineHeight = Math.round(bodySize * 1.6)
+  const bulletIndent = 20 * CANVAS_DPI
+  const contentWidth = canvasWidth - paddingX * 2 - bulletIndent
+  const measure = document.createElement('canvas').getContext('2d')
+  if (!measure) throw new Error('Canvas 2D contextが利用できません。')
+
+  const wrappedLines: { text: string; indent: number }[] = []
+  items.forEach((item, itemIndex) => {
+    const segments = wrapCanvasText(item, contentWidth, bodySize, measure)
+    segments.forEach((segment, segmentIndex) => {
+      if (!segment) {
+        wrappedLines.push({ text: '', indent: 0 })
+        return
+      }
+      if (segmentIndex === 0) {
+        wrappedLines.push({ text: `・ ${segment}`, indent: 0 })
+      } else {
+        wrappedLines.push({ text: segment, indent: bulletIndent })
+      }
+    })
+    if (itemIndex < items.length - 1) {
+      wrappedLines.push({ text: '', indent: 0 })
+    }
+  })
+
+  const lineCount = wrappedLines.length || 1
+  const canvasHeight = paddingY * 2 + titleSize + 16 * CANVAS_DPI + lineCount * lineHeight
+  const canvas = document.createElement('canvas')
+  canvas.width = canvasWidth
+  canvas.height = canvasHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D contextが利用できません。')
+
+  ctx.fillStyle = '#f1f5f9'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  setCanvasFont(ctx, titleSize, 'bold')
+  ctx.fillStyle = '#0f172a'
+  let cursorY = paddingY + titleSize
+  ctx.fillText(title, paddingX, cursorY)
+
+  setCanvasFont(ctx, bodySize, 'normal')
+  ctx.fillStyle = '#1e293b'
+  cursorY += 16 * CANVAS_DPI
+
+  wrappedLines.forEach(line => {
+    cursorY += lineHeight
+    if (!line.text) return
+    ctx.fillText(line.text, paddingX + line.indent, cursorY)
+  })
+
+  return canvas
+}
+
+function wrapCanvasText(
+  text: string,
+  maxWidth: number,
+  fontSize: number,
+  ctx: CanvasRenderingContext2D
+) {
+  const result: string[] = []
+  setCanvasFont(ctx, fontSize, 'normal')
+  const paragraphs = text.split(/\r?\n/)
+  paragraphs.forEach((paragraph, index) => {
+    if (!paragraph.trim()) {
+      if (result.length) result.push('')
+      return
+    }
+    let current = ''
+    for (const ch of paragraph) {
+      const next = current + ch
+      if (ctx.measureText(next).width > maxWidth && current) {
+        result.push(current)
+        current = ch
+      } else {
+        current = next
+      }
+    }
+    if (current) {
+      result.push(current)
+    }
+    if (index < paragraphs.length - 1) {
+      result.push('')
+    }
+  })
+  return result
+}
+
+function setCanvasFont(ctx: CanvasRenderingContext2D, size: number, weight: 'normal' | 'bold') {
+  const numericWeight = weight === 'bold' ? 600 : 400
+  ctx.font = `${numericWeight} ${size}px ${FONT_FAMILY}`
+  ctx.textBaseline = 'alphabetic'
 }
