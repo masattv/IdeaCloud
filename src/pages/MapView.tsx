@@ -45,9 +45,13 @@ export default function MapView() {
   }
 
   function buildElements(list: IdeaFragment[]): ElementsDefinition {
-    const nodes = list.map(f => ({
-      data: { id: f.id, label: f.text.slice(0, 32) || '…', clusterId: f.clusterId || 'none' }
-    }))
+    const nodes = list.map(f => {
+      const trimmed = (f.text || '').trim()
+      const label = trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed || '…'
+      return {
+        data: { id: f.id, label, clusterId: f.clusterId || 'none' }
+      }
+    })
     const edges: any[] = [] // MVP: 関連は将来
     return { nodes, edges }
   }
@@ -59,18 +63,25 @@ export default function MapView() {
     ids.forEach((id, i) => (colorBy[id] = palette[i % palette.length]))
     return {
       label: 'data(label)',
-      'font-size': 12,
+      'font-size': 13,
+      'font-family': '"Noto Sans JP", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif',
       'text-wrap': 'wrap',
-      'text-max-width': 120,
+      'text-max-width': '140px',
+      'text-valign': 'top',
+      'text-halign': 'center',
+      'text-margin-y': -14,
+      'text-background-color': 'rgba(15,23,42,0.75)',
+      'text-background-shape': 'roundrectangle',
+      'text-background-opacity': 0.85,
       width: 16,
       height: 16,
       'border-width': 2,
       'border-color': 'rgba(15,118,110,0.6)',
       'background-color': (ele: any) => colorBy[ele.data('clusterId')] || '#94a3b8',
-      'color': '#0f172a',
+      color: '#e2e8f0',
       'font-weight': '600',
-      'text-outline-color': '#0f172a',
-      'text-outline-width': 3
+      'text-outline-color': 'rgba(15,23,42,0.7)',
+      'text-outline-width': 2
     } as any
   }
 
