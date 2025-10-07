@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { db, IdeaFragment } from '../db/db'
-import { insightForCluster } from '../services/ai'
-
-type InsightPayload = { summary: string; next_steps: string[]; titles: string[] }
+import { db, IdeaFragment, InsightCache } from '../db/db'
+import { insightForCluster, Insight as InsightPayload } from '../services/ai'
 
 export default function Insight() {
   const [rows, setRows] = useState<IdeaFragment[]>([])
@@ -17,7 +15,13 @@ export default function Insight() {
   }, [])
 
   useEffect(() => {
-    void refreshRows()
+    void (async () => {
+      await refreshRows()
+      const cached = await db.insights.get('latest')
+      if (cached) {
+        setIns({ summary: cached.summary, next_steps: cached.nextSteps, titles: cached.titles })
+      }
+    })()
   }, [refreshRows])
 
   async function genInsight() {
@@ -30,13 +34,44 @@ export default function Insight() {
         setError('分析するメモがありません。まずはキャプチャから断片を追加してください。')
         return
       }
-      const texts = latestRows.map(r => r.text).filter(Boolean)
+      const cached = await db.insights.get('latest')
+      const knownIds = new Set(cached?.fragmentIds || [])
+      const newFragments = latestRows.filter(r => !knownIds.has(r.id))
+      const targetRows = cached && cached.fragmentIds.length ? newFragments : latestRows
+      const texts = targetRows.map(r => r.text).filter(Boolean)
       if (!texts.length) {
         setIns(null)
         setError('テキストの内容が空です。メモの内容を確認してください。')
         return
       }
-      const result = await insightForCluster(texts)
+      if (cached && !newFragments.length) {
+        setIns({ summary: cached.summary, next_steps: cached.nextSteps, titles: cached.titles })
+        setError('新しい断片がないため既存のインサイトを表示しています。')
+        return
+      }
+      const previous =
+        cached && cached.fragmentIds.length
+          ? {
+              summary: cached.summary,
+              next_steps: cached.nextSteps,
+              titles: cached.titles,
+              item_count: cached.fragmentIds.length
+            }
+          : undefined
+      const result = await insightForCluster(texts, previous)
+      const mergedIds =
+        cached && previous
+          ? Array.from(new Set([...cached.fragmentIds, ...newFragments.map(r => r.id)]))
+          : latestRows.map(r => r.id)
+      const record: InsightCache = {
+        id: 'latest',
+        summary: result.summary,
+        nextSteps: result.next_steps,
+        titles: result.titles,
+        fragmentIds: mergedIds,
+        updatedAt: new Date().toISOString()
+      }
+      await db.insights.put(record)
       setIns(result)
     } catch (err) {
       console.error(err)

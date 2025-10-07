@@ -18,14 +18,25 @@ export interface CloudCluster {
   score: number
 }
 
+export interface InsightCache {
+  id: string
+  summary: string
+  nextSteps: string[]
+  titles: string[]
+  fragmentIds: string[]
+  updatedAt: string
+}
+
 class IdeaCloudDB extends Dexie {
   fragments!: Table<IdeaFragment, string>
   clusters!: Table<CloudCluster, string>
+  insights!: Table<InsightCache, string>
   constructor() {
     super('ideacloud-db')
-    this.version(2).stores({
+    this.version(3).stores({
       fragments: 'id, createdAt, clusterId, *tags',
-      clusters: 'id, label'
+      clusters: 'id, label',
+      insights: 'id'
     })
   }
 }
