@@ -21,7 +21,21 @@ export default function MapView() {
       setBusy(true)
       setError(null)
       const items = await db.fragments.toArray()
-      const out = await clusterize(items.map(f => ({ id: f.id, text: f.text, tags: f.tags || [] })))
+      const existingClusters = await db.clusters.toArray()
+      const hasNewFragments = items.some(f => !f.clusterId)
+      if (!hasNewFragments && existingClusters.length) {
+        setError('新しい断片がないため再計算をスキップしました。')
+        return
+      }
+      const out = await clusterize(
+        items.map(f => ({ id: f.id, text: f.text, tags: f.tags || [] })),
+        existingClusters.map(c => ({
+          id: c.id,
+          label: c.label,
+          memberIds: c.fragmentIds,
+          keywords: c.tagHints
+        }))
+      )
       await db.clusters.clear()
       const toInsert: CloudCluster[] = out.map(c => ({
         id: c.id,
